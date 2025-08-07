@@ -27,17 +27,22 @@ class StockPredictor:
         """Fetch current day stock data with some historical context"""
         stock = yf.Ticker(self.symbol)
         
-        # Get current day intraday data with fallback
-        try:
-            current_data = stock.history(period="1d", interval="1m")
-            if len(current_data) == 0:
-                # Fallback to 5-minute intervals for indices
-                current_data = stock.history(period="1d", interval="5m")
+        # For indices, use daily data primarily
+        if self.symbol.startswith('^'):
+            try:
+                current_data = stock.history(period="5d", interval="1d")
                 if len(current_data) == 0:
-                    # Final fallback to daily data
-                    current_data = stock.history(period="2d", interval="1d")
-        except:
-            current_data = stock.history(period="2d", interval="1d")
+                    raise Exception("No data available")
+            except:
+                raise Exception(f"Unable to fetch data for {self.symbol}")
+        else:
+            # For stocks, try intraday first
+            try:
+                current_data = stock.history(period="1d", interval="1m")
+                if len(current_data) == 0:
+                    current_data = stock.history(period="5d", interval="1d")
+            except:
+                current_data = stock.history(period="5d", interval="1d")
         
         # Get historical daily data for pattern analysis
         historical_data = stock.history(period="30d", interval="1d")
@@ -47,7 +52,7 @@ class StockPredictor:
     def get_news_sentiment(self):
         """Get news sentiment using NewsAPI (free tier)"""
         # You need to get a free API key from https://newsapi.org/
-        api_key = "Replace with your API key"  # Replace with your API key
+        api_key = "0f317ca2550446838482fbc049f066c8"  # Replace with your API key
         
         url = f"https://newsapi.org/v2/everything"
         params = {
@@ -84,22 +89,16 @@ class StockPredictor:
         market_data = {}
         for symbol in indices + futures:
             try:
-                # Try intraday first, fallback to daily data
                 ticker = yf.Ticker(symbol)
-                data = ticker.history(period="1d", interval="1m")['Close']
-                if len(data) == 0:
-                    # Fallback to daily data for indices
-                    data = ticker.history(period="5d", interval="1d")['Close']
-                    if len(data) > 0:
-                        # Create synthetic intraday data from daily
-                        last_close = data.iloc[-1]
-                        market_data[symbol] = pd.Series(0.001, index=pd.date_range(start=datetime.now().replace(hour=9, minute=30), periods=100, freq='1min'))
-                    else:
-                        market_data[symbol] = pd.Series(0, index=pd.date_range(start=datetime.now(), periods=100, freq='1min'))
+                data = ticker.history(period="5d", interval="1d")['Close']
+                if len(data) >= 2:
+                    # Calculate daily change and use as proxy
+                    daily_change = data.pct_change().iloc[-1]
+                    market_data[symbol] = pd.Series(daily_change, index=pd.date_range(start=datetime.now(), periods=1, freq='1min'))
                 else:
-                    market_data[symbol] = data.pct_change().fillna(0)
+                    market_data[symbol] = pd.Series(0, index=pd.date_range(start=datetime.now(), periods=1, freq='1min'))
             except:
-                market_data[symbol] = pd.Series(0, index=pd.date_range(start=datetime.now(), periods=100, freq='1min'))
+                market_data[symbol] = pd.Series(0, index=pd.date_range(start=datetime.now(), periods=1, freq='1min'))
         
         return market_data
     
@@ -140,7 +139,11 @@ class StockPredictor:
         market_data = self.get_market_data()
         for symbol, data_series in market_data.items():
             col_name = symbol.replace('^', '').replace('=F', '_F')
-            df[f'{col_name}_Change'] = data_series.reindex(df.index, method='ffill').fillna(0)
+            # Handle timezone issues by using scalar values
+            if len(data_series) > 0:
+                df[f'{col_name}_Change'] = data_series.iloc[0]
+            else:
+                df[f'{col_name}_Change'] = 0
         
         # Chart pattern features
         if len(df) > 50:
@@ -415,7 +418,7 @@ class StockPredictor:
 
 def main():
     # Example usage
-    symbol = input("Enter stock symbol (e.g., AAPL, TSLA, MSFT): ").upper()
+    symbol = input("Enter stock symbol (e.g., AAPL, TSLA, MSFT, ^GSPC): ").strip().upper()
     
     predictor = StockPredictor(symbol)
     
